@@ -14,20 +14,28 @@ def dump_json(path: Path, obj: Any):
         json.dump(obj, fp)
 
 
-log_lvl = 4
+cur_log_lvl = 3
+log_lvl_lut = {'DEBUG': 5, 'INFO': 4,
+               'NOTICE': 3, 'WARN': 2, 'ERR': 1, 'CRIT': 0}
 
 
 def log(lvl: str, msg: str):
-    global log_lvl
+    log_lvl = log_lvl_lut.get(lvl)
+    if log_lvl == None:
+        raise ValueError(f"bad lvl: '{lvl}'")
 
-    if lvl == 'INFO' and log_lvl >= 4:
-        print('[INFO] ' + msg, file=sys.stderr)
-    elif lvl == 'WARN' and log_lvl >= 3:
-        print('[WARN] ' + msg, file=sys.stderr)
-    elif lvl == 'CRIT' and log_lvl >= 2:
-        print('[CRIT] ' + msg, file=sys.stderr)
-    elif lvl == 'ERRO' and log_lvl >= 1:
-        print('[ERRO] ' + msg, file=sys.stderr)
+    global cur_log_lvl
+    if log_lvl <= cur_log_lvl:
+        print(f"[{lvl}] {msg}", file=sys.stderr)
+
+
+def set_log_lvl(lvl: str):
+    log_lvl = log_lvl_lut.get(lvl)
+    if log_lvl == None:
+        raise ValueError(f"bad lvl: '{lvl}'")
+
+    global cur_log_lvl
+    cur_log_lvl = log_lvl
 
 
 Bbox = tuple[int, int, int, int]
