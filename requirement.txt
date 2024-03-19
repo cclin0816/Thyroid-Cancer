@@ -1,0 +1,11 @@
+opencv-python
+openslide-python
+pandas
+pillow
+matplotlib
+numpy
+ipython
+tqdm
+jupyterlab
+ipywidgets
+xxhash

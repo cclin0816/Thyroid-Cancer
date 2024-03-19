@@ -1,8 +1,9 @@
-.venv
+.py*
 .vscode
 cache
 dataset
 output
 reference
+pyrightconfig.json
 
 __pycache__
