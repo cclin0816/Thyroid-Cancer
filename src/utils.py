@@ -1,13 +1,14 @@
-from IPython.display import display
-from pandas import Series
-from pathlib import Path
-from typing import Any
-from PIL import Image
-import image_tools
 import openslide
 import json
 import sys
 import xxhash
+from IPython.display import display
+from pathlib import Path
+from typing import Any
+from PIL import Image
+from pandas import Series
+
+import image_tools
 
 
 def load_json(path: Path) -> Any:
@@ -15,7 +16,7 @@ def load_json(path: Path) -> Any:
         return json.load(fp)
 
 
-def dump_json(path: Path, obj: Any):
+def dump_json(path: Path, obj: Any) -> None:
     with path.open("w") as fp:
         json.dump(obj, fp)
 
@@ -24,7 +25,7 @@ cur_log_lvl = 3
 log_lvl_lut = {"DEBUG": 5, "INFO": 4, "NOTICE": 3, "WARN": 2, "ERR": 1, "CRIT": 0}
 
 
-def log(lvl: str, msg: str):
+def log(lvl: str, msg: str) -> None:
     log_lvl = log_lvl_lut.get(lvl)
     if log_lvl is None:
         raise ValueError(f"bad lvl: '{lvl}'")
@@ -34,7 +35,7 @@ def log(lvl: str, msg: str):
         print(f"[{lvl}] {msg}", file=sys.stderr)
 
 
-def set_log_lvl(lvl: str):
+def set_log_lvl(lvl: str) -> None:
     log_lvl = log_lvl_lut.get(lvl)
     if log_lvl is None:
         raise ValueError(f"bad lvl: '{lvl}'")
@@ -69,7 +70,7 @@ class SlideReader:
         if handle is None:
             handle = openslide.open_slide(self.folder / (slide + ".ndpi"))
             # purge cache, doing smth like LRU is not really beneficial
-            if len(self.cache) > 64:
+            if len(self.cache) > 16:
                 self.cache.clear()
             self.cache[slide] = handle
         return handle

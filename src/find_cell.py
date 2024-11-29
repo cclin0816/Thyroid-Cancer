@@ -1,9 +1,12 @@
 import cv2
 import math
 import numpy as np
-from pandas import Series
 
 import utils
+import image_tools as imt
+
+
+ones3x3 = np.ones((3, 3), dtype=np.uint8)
 
 
 def fit_ellipse(contour):
@@ -25,93 +28,16 @@ def fit_ellipse(contour):
     return elps
 
 
-# def crop_rotate(image, center, size, angle):
-#     # crop small square first to speed up rotate
-#     (w, h) = size
-#     crop_size = math.ceil(math.sqrt((w / 2) ** 2 + (h / 2) ** 2) * 2)
-#     crop = cv2.getRectSubPix(image, (crop_size, crop_size), center)
-#     crop_center = crop_size / 2
-
-#     rot_mat = cv2.getRotationMatrix2D((crop_center, crop_center), angle, 1)
-#     rotate = cv2.warpAffine(crop, rot_mat, (crop_size, crop_size))
-
-#     crop = cv2.getRectSubPix(rotate, (w, h), (crop_center, crop_center))
-
-#     return crop
-
-
-# def bg_mean(image):
-#     (h, w) = np.shape(image)
-#     center_mask = np.zeros((h, w), dtype=bool)
-#     center_mask[9:(h - 9), 9:(w - 9)
-#                 ] = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (w - 18, h - 18))
-#     bg = np.ma.array(image, mask=center_mask)
-#     return np.ma.mean(bg)
-
-
-# def refine_cell(image, elps):
-#     ((cx, cy), (w, h), angle) = elps
-#     w = math.ceil(w)
-#     h = math.ceil(h)
-#
-#     # eliminate partial cell (ellipse on edges)
-#     (img_h, img_w, _) = np.shape(image)
-#     r = h / 2
-#     if cx - r < 0 or cx + r + 1 > img_w or cy - r < 0 or cy + r + 1 > img_h:
-#         return []
-#
-#     crop = crop_rotate(image, (cx, cy), (w + 15, h + 15), angle)
-#     for idx in range(3):
-#         crop[..., idx] = imt.minmax_norm(crop[..., idx])
-#     gray = imt.rgb2gray(crop)
-#     blur = cv2.GaussianBlur(gray, (5, 5), 0)
-#
-#     thres = bg_mean(blur)
-#     edge = cv2.Canny(blur, thres * 0.66, thres * 1.33)
-#     darker = cv2.adaptiveThreshold(
-#         blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 3, 1)
-#     darker = cv2.morphologyEx(darker, cv2.MORPH_OPEN, np.array(
-#         [[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=np.uint8))
-#
-#     bd.display(Image.fromarray(blur))
-#     bd.display(Image.fromarray(edge))
-#     bd.display(Image.fromarray(darker))
-#
-#     contours, hierarchies = cv2.findContours(
-#         darker, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
-#     # no contour found
-#     if hierarchies is None:
-#         return []
-#
-#     for contour, hierarchy in zip(contours, hierarchies[0]):
-#         # outer region only, see cv2.RETR_CCOMP
-#         if hierarchy[3] != -1:
-#             continue
-#         segment = cv2.fillPoly(
-#             # type: ignore
-#             np.zeros((h + 15, w + 15), dtype=np.uint8), [contour], 255)
-#         segment = cv2.dilate(segment, np.ones(
-#             (3, 3), dtype=np.uint8)) & edge  # type: ignore
-#
-#         bd.display(Image.fromarray(segment))
-#
-#     bd.flush()
-#
-#     return [elps]
-
-
-ones3x3 = np.ones((3, 3), dtype=np.uint8)
-
-
-def find_cell(index, value: Series, reader: utils.SlideReader, info: dict) -> list:
-    ori_image = reader.read_bbox(value["slide"], utils.get_bbox(value))  # type: ignore
+def find_cell(
+    uid: int, slide: str, bbox: utils.Bbox, reader: utils.SlideReader, info: dict
+) -> list[tuple]:
+    ori_image = reader.read_bbox(slide, bbox)  # type: ignore
 
     p10 = np.array([info["r_p10"], info["g_p10"], info["b_p10"]])
     p0 = np.array([info["r_min"], info["g_min"], info["b_min"]])
     scale = 255 / (p10 - p0).astype(np.float32)
 
-    image = ori_image.convert("RGB")
-    image = np.array(image)
+    image = np.array(ori_image.convert("RGB"))
     image = (np.clip(image, None, p10) - p0).astype(np.float32)
     image = image * scale
 
@@ -139,9 +65,68 @@ def find_cell(index, value: Series, reader: utils.SlideReader, info: dict) -> li
         if elps is None:
             continue
 
-        # result.extend(refine_cell(image, elps))
+        score = cell_score(image, elps)
 
         center, size, angle = elps
-        result.append((index, *center, *size, angle))
+        result.append((uid, *center, *size, angle, score))
 
     return result
+
+
+def cell_score(image, elps):
+    ((cx, cy), (w, h), angle) = elps
+    w = math.ceil(w)
+    h = math.ceil(h)
+    cw = w + 6
+    ch = h + 6
+
+    # cell on edge
+    (ih, iw, _) = np.shape(image)
+    r = ch / 2
+    if cx - r < 0 or cx + r > iw - 1 or cy - r < 0 or cy + r > ih - 1:
+        return 0.0
+
+    crop = imt.crop_rotated_rectangle(image, (cx, cy), (cw, ch), angle)
+
+    cc = ((cw - 1) / 2, (ch - 1) / 2)
+    cell_mask = cv2.ellipse(
+        np.zeros((ch, cw), dtype=np.uint8),
+        box=(cc, (w, h), 0),
+        color=255,  # type: ignore
+        thickness=-1,
+    )
+    rim_mask = cv2.ellipse(
+        np.zeros((ch, cw), dtype=np.uint8),
+        box=(cc, (cw, ch), 0),
+        color=255,  # type: ignore
+        thickness=-1,
+    )
+    rim_mask ^= cell_mask
+    cell_mask = cell_mask == 0
+    rim_mask = rim_mask == 0
+
+    cell = np.copy(crop)
+    cell[np.repeat(cell_mask[..., np.newaxis], 3, 2)] = np.nan
+    rim = np.copy(crop)
+    rim[np.repeat(rim_mask[..., np.newaxis], 3, 2)] = np.nan
+    clip_min = np.nanpercentile(cell, 30, axis=(0, 1))
+    clip_max = np.nanpercentile(rim, 70, axis=(0, 1))
+    if np.any(clip_min >= clip_max):
+        return 0.0
+
+    crop = np.clip(crop, clip_min, clip_max) - clip_min
+    crop = crop * 255 / (clip_max - clip_min)
+    crop = np.mean(crop, axis=2)
+
+    cell = np.copy(crop)
+    cell[cell_mask] = np.nan
+    rim = np.copy(crop)
+    rim[rim_mask] = np.nan
+
+    cell_thres = np.nanpercentile(cell, 85)
+    rim_thres = np.nanpercentile(rim, 30)
+    score = min(max((rim_thres - cell_thres) * 2, 0), 60)  # type: ignore
+    score += min(max(80 - np.nanstd(cell), 0), 40)  # type: ignore
+    score += min(max(80 - np.nanmean(cell), 0), 40)  # type: ignore
+
+    return score / 140
