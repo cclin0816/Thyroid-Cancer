@@ -32,27 +32,27 @@ def find_cell(
     uid: int, slide: str, bbox: utils.Bbox, reader: utils.SlideReader, info: dict
 ) -> list[tuple]:
     ori_image = reader.read_bbox(slide, bbox)  # type: ignore
+    image = np.array(ori_image.convert("RGB"))
 
+    # suppress backgroud
     p10 = np.array([info["r_p10"], info["g_p10"], info["b_p10"]])
     p0 = np.array([info["r_min"], info["g_min"], info["b_min"]])
     scale = 255 / (p10 - p0).astype(np.float32)
-
-    image = np.array(ori_image.convert("RGB"))
     image = (np.clip(image, None, p10) - p0).astype(np.float32)
     image = image * scale
 
+    # generate mask, opencv adaptive threshold but for float32
     gray = np.mean(image, axis=2)
     blur = cv2.GaussianBlur(gray, (11, 11), 0, borderType=cv2.BORDER_REPLICATE)
     thres = cv2.GaussianBlur(gray, (21, 21), 0, borderType=cv2.BORDER_REPLICATE) - 1
-
     mask = cv2.compare(blur, thres, cv2.CMP_LE)
+    # cleanup mask
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, ones3x3)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, ones3x3)
 
     contours, hierarchies = cv2.findContours(
         mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE
     )
-
     if len(contours) == 0:
         return []
 
@@ -65,9 +65,8 @@ def find_cell(
         if elps is None:
             continue
 
-        score = cell_score(image, elps)
-
         center, size, angle = elps
+        score = cell_score(image, elps)
         result.append((uid, *center, *size, angle, score))
 
     return result
@@ -77,10 +76,11 @@ def cell_score(image, elps):
     ((cx, cy), (w, h), angle) = elps
     w = math.ceil(w)
     h = math.ceil(h)
+    # out crop a little
     cw = w + 6
     ch = h + 6
 
-    # cell on edge
+    # check cell on edge
     (ih, iw, _) = np.shape(image)
     r = ch / 2
     if cx - r < 0 or cx + r > iw - 1 or cy - r < 0 or cy + r > ih - 1:
@@ -105,12 +105,15 @@ def cell_score(image, elps):
     cell_mask = cell_mask == 0
     rim_mask = rim_mask == 0
 
+    # adjust contrast
     cell = np.copy(crop)
     cell[np.repeat(cell_mask[..., np.newaxis], 3, 2)] = np.nan
     rim = np.copy(crop)
     rim[np.repeat(rim_mask[..., np.newaxis], 3, 2)] = np.nan
+
     clip_min = np.nanpercentile(cell, 30, axis=(0, 1))
     clip_max = np.nanpercentile(rim, 70, axis=(0, 1))
+    # bad contrast
     if np.any(clip_min >= clip_max):
         return 0.0
 
@@ -118,14 +121,15 @@ def cell_score(image, elps):
     crop = crop * 255 / (clip_max - clip_min)
     crop = np.mean(crop, axis=2)
 
+    # score by magic method that LGTM
     cell = np.copy(crop)
     cell[cell_mask] = np.nan
     rim = np.copy(crop)
     rim[rim_mask] = np.nan
 
-    cell_thres = np.nanpercentile(cell, 85)
+    cell_thres = np.nanpercentile(cell, 90)
     rim_thres = np.nanpercentile(rim, 30)
-    score = min(max((rim_thres - cell_thres) * 2, 0), 60)  # type: ignore
+    score = min(max((rim_thres - cell_thres) * 2, 0), 40) * 1.5  # type: ignore
     score += min(max(80 - np.nanstd(cell), 0), 40)  # type: ignore
     score += min(max(80 - np.nanmean(cell), 0), 40)  # type: ignore
 

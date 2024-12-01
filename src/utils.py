@@ -21,11 +21,13 @@ def dump_json(path: Path, obj: Any) -> None:
         json.dump(obj, fp)
 
 
+# default NOTICE
 cur_log_lvl = 3
 log_lvl_lut = {"DEBUG": 5, "INFO": 4, "NOTICE": 3, "WARN": 2, "ERR": 1, "CRIT": 0}
 
 
 def log(lvl: str, msg: str) -> None:
+    global log_lvl_lut
     log_lvl = log_lvl_lut.get(lvl)
     if log_lvl is None:
         raise ValueError(f"bad lvl: '{lvl}'")
@@ -36,6 +38,7 @@ def log(lvl: str, msg: str) -> None:
 
 
 def set_log_lvl(lvl: str) -> None:
+    global log_lvl_lut
     log_lvl = log_lvl_lut.get(lvl)
     if log_lvl is None:
         raise ValueError(f"bad lvl: '{lvl}'")
