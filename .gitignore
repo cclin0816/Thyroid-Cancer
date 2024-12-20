@@ -1,9 +1,9 @@
 .py*
 .vscode
-cache
-dataset
-output
+dataset/*
+output/*
 reference
 pyrightconfig.json
-
 __pycache__
+
+!.gitkeep

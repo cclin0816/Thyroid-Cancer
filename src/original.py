@@ -1,4 +1,4 @@
-""" "previous implementation of fit ellipse"""
+"""previous implementation of fit ellipse"""
 
 import cv2
 import math
@@ -60,4 +60,3 @@ def find_cell(image: Image.Image, tag: str):
     elif tag == "BFC":
         return bfc_find_template(image)
     raise ValueError("bad tag")
-

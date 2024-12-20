@@ -1,3 +1,6 @@
+import math
+import cv2
+import numpy
 import openslide
 import json
 import sys
@@ -6,9 +9,6 @@ from IPython.display import display
 from pathlib import Path
 from typing import Any
 from PIL import Image
-from pandas import Series
-
-import image_tools
 
 
 def load_json(path: Path) -> Any:
@@ -51,8 +51,55 @@ Bbox = tuple[int, int, int, int]
 """ type alias of (x_min, y_min, width, height) """
 
 
-def get_bbox(data: Series) -> Bbox:
+def get_bbox(data) -> Bbox:
     return (data["x_min"], data["y_min"], data["width"], data["height"])  # type: ignore
+
+
+def resize_keep_ratio(image: Image.Image, width: int, height: int) -> Image.Image:
+    # image.thumbnail() fails when image is smaller than width, height
+    ratio = image.width / image.height
+    if ratio > 1.0:
+        w = width
+        h = round(w / ratio)
+    else:
+        h = height
+        w = round(h * ratio)
+
+    return image.resize((w, h), Image.Resampling.LANCZOS)
+
+
+def grid_composite(
+    images: list[Image.Image], row_len: int = 16, width: int = 100, height: int = 100
+) -> Image.Image:
+    col_len = math.ceil(len(images) / row_len)
+    grid = Image.new("RGB", (width * row_len, height * col_len))
+
+    for idx, image in enumerate(images):
+        img = resize_keep_ratio(image, width, height)
+        x = (idx % row_len) * width + (width - img.width) // 2
+        y = (idx // row_len) * height + (height - img.height) // 2
+        grid.paste(img, (x, y))
+
+    return grid
+
+
+def crop_rotated_rectangle(
+    image: numpy.ndarray,
+    center: tuple[float, float],
+    size: tuple[int, int],
+    angle: float,
+) -> numpy.ndarray:
+    # crop small square first to speed up rotate
+    (w, h) = size
+    cs = math.ceil(math.sqrt((w / 2) ** 2 + (h / 2) ** 2) * 2)
+    cc = (cs - 1) / 2
+    cs = (cs, cs)
+    cc = (cc, cc)
+
+    crop = cv2.getRectSubPix(image, cs, center)
+    rot_mat = cv2.getRotationMatrix2D(cc, angle, 1)
+    rotate = cv2.warpAffine(crop, rot_mat, cs)
+    return cv2.getRectSubPix(rotate, size, cc)
 
 
 class SlideReader:
@@ -92,9 +139,7 @@ class BufferedDisplay:
 
     def flush(self) -> None:
         if len(self.buf) > 0:
-            grid = image_tools.grid_composite(
-                self.buf, self.row_len, self.width, self.height
-            )
+            grid = grid_composite(self.buf, self.row_len, self.width, self.height)
             display(grid)
             self.buf.clear()
 

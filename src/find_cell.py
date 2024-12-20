@@ -3,7 +3,6 @@ import math
 import numpy as np
 
 import utils
-import image_tools as imt
 
 
 ones3x3 = np.ones((3, 3), dtype=np.uint8)
@@ -29,10 +28,10 @@ def fit_ellipse(contour):
 
 
 def find_cell(
-    uid: int, slide: str, bbox: utils.Bbox, reader: utils.SlideReader, info: dict
+    slide: str, bbox: utils.Bbox, reader: utils.SlideReader, info: dict
 ) -> list[tuple]:
-    ori_image = reader.read_bbox(slide, bbox)  # type: ignore
-    image = np.array(ori_image.convert("RGB"))
+    image = reader.read_bbox(slide, bbox)
+    image = np.array(image.convert("RGB"))
 
     # suppress backgroud
     p10 = np.array([info["r_p10"], info["g_p10"], info["b_p10"]])
@@ -67,7 +66,7 @@ def find_cell(
 
         center, size, angle = elps
         score = cell_score(image, elps)
-        result.append((uid, *center, *size, angle, score))
+        result.append((*center, *size, angle, score))
 
     return result
 
@@ -86,7 +85,7 @@ def cell_score(image, elps):
     if cx - r < 0 or cx + r > iw - 1 or cy - r < 0 or cy + r > ih - 1:
         return 0.0
 
-    crop = imt.crop_rotated_rectangle(image, (cx, cy), (cw, ch), angle)
+    crop = utils.crop_rotated_rectangle(image, (cx, cy), (cw, ch), angle)
 
     cc = ((cw - 1) / 2, (ch - 1) / 2)
     cell_mask = cv2.ellipse(
