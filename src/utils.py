@@ -5,10 +5,12 @@ import openslide
 import json
 import sys
 import xxhash
+import concurrent.futures
 from IPython.display import display
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar, TypeVarTuple, Unpack
 from PIL import Image
+from tqdm.auto import tqdm
 
 
 def load_json(path: Path) -> Any:
@@ -151,3 +153,34 @@ class BufferedDisplay:
 
 def mass_hash(slide: str, bbox: Bbox) -> int:
     return xxhash.xxh3_64_intdigest(f"{slide},{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}")
+
+
+_T = TypeVar("_T")
+_Tr = TypeVar("_Tr")
+_Ts = TypeVarTuple("_Ts")
+
+
+def parallel_map(
+    use_proc: bool,
+    func: Callable[[_T], _Tr],
+    args: list[_T],
+    initializer: Callable[[Unpack[_Ts]], object],
+    initargs: tuple[Unpack[_Ts]],
+) -> list[_Tr]:
+    def run(
+        executor: concurrent.futures.Executor,
+        func: Callable[[_T], _Tr],
+        args: list[_T],
+    ):
+        return list(tqdm(executor.map(func, args, chunksize=32), total=len(args)))
+
+    if use_proc:
+        with concurrent.futures.ProcessPoolExecutor(
+            initializer=initializer,
+            initargs=initargs,
+        ) as executor:
+            return run(executor, func, args)
+    else:
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            initializer(*initargs)
+            return run(executor, func, args)
