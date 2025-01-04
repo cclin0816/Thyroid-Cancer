@@ -172,7 +172,7 @@ def parallel_map(
         func: Callable[[_T], _Tr],
         args: list[_T],
     ):
-        return list(tqdm(executor.map(func, args, chunksize=32), total=len(args)))
+        return list(tqdm(executor.map(func, args, chunksize=16), total=len(args)))
 
     if use_proc:
         with concurrent.futures.ProcessPoolExecutor(
@@ -184,3 +184,7 @@ def parallel_map(
         with concurrent.futures.ThreadPoolExecutor() as executor:
             initializer(*initargs)
             return run(executor, func, args)
+
+
+def clamp(value, min_val, max_val):
+    return max(min(value, max_val), min_val)

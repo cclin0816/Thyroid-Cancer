@@ -1,6 +1,7 @@
 import cv2
 import math
 import numpy as np
+import colorsys
 
 import utils
 
@@ -27,28 +28,32 @@ def fit_ellipse(contour):
     return elps
 
 
+def rescale(image, clip_min, clip_max):
+    image = np.clip(image, clip_min, clip_max) - clip_min
+    return image / (clip_max - clip_min)
+
+
 def find_cell(
     slide: str, bbox: utils.Bbox, reader: utils.SlideReader, info: dict
 ) -> list[tuple]:
     image = reader.read_bbox(slide, bbox)
-    image = np.array(image.convert("RGB"))
+    image = np.array(image.convert("RGB"), dtype=np.float32)
 
     # suppress backgroud
-    p10 = np.array([info["r_p10"], info["g_p10"], info["b_p10"]])
-    p0 = np.array([info["r_min"], info["g_min"], info["b_min"]])
-    scale = 255 / (p10 - p0).astype(np.float32)
-    image = (np.clip(image, None, p10) - p0).astype(np.float32)
-    image = image * scale
+    clip_max = np.array([info["r_p10"], info["g_p10"], info["b_p10"]], dtype=np.float32)
+    clip_min = np.array([info["r_min"], info["g_min"], info["b_min"]], dtype=np.float32)
+    image = rescale(image, clip_min, clip_max)
 
-    # generate mask, opencv adaptive threshold but for float32
+    # generate mask, adaptive threshold but for float32
     gray = np.mean(image, axis=2)
     blur = cv2.GaussianBlur(gray, (11, 11), 0, borderType=cv2.BORDER_REPLICATE)
-    thres = cv2.GaussianBlur(gray, (21, 21), 0, borderType=cv2.BORDER_REPLICATE) - 1
-    mask = cv2.compare(blur, thres, cv2.CMP_LE)
+    thres = cv2.GaussianBlur(gray, (25, 25), 0, borderType=cv2.BORDER_REPLICATE) - 0.01
+    mask = cv2.compare(blur, thres, cv2.CMP_LT)
     # cleanup mask
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, ones3x3)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, ones3x3)
 
+    # fit contour with ellipse
     contours, hierarchies = cv2.findContours(
         mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE
     )
@@ -66,9 +71,36 @@ def find_cell(
 
         center, size, angle = elps
         score = cell_score(image, elps)
+        if score == 0.0:
+            continue
         result.append((*center, *size, angle, score))
 
     return result
+
+
+def ellipse_mask(mw, mh, ew, eh):
+    return (
+        cv2.ellipse(
+            np.zeros((mh, mw), dtype=np.uint8),
+            box=(((mw - 1) / 2, (mh - 1) / 2), (ew, eh), 0),
+            color=255,  # type: ignore
+            thickness=-1,
+        )
+        == 0
+    )
+
+
+def mask_nan(image, mask):
+    if image.ndim == 3 and mask.ndim == 2:
+        mask = np.repeat(mask[..., np.newaxis], np.shape(image)[2], 2)
+    image = np.copy(image)
+    image[mask] = np.nan
+    return image
+
+
+def on_border(shape, x, y, r):
+    (h, w, _) = shape
+    return x - r < 0 or x + r > w - 1 or y - r < 0 or y + r > h - 1
 
 
 def cell_score(image, elps):
@@ -79,57 +111,49 @@ def cell_score(image, elps):
     cw = w + 6
     ch = h + 6
 
-    # check cell on edge
-    (ih, iw, _) = np.shape(image)
-    r = ch / 2
-    if cx - r < 0 or cx + r > iw - 1 or cy - r < 0 or cy + r > ih - 1:
+    # partial cell filter
+    if on_border(np.shape(image), cx, cy, ch / 2):
         return 0.0
 
     crop = utils.crop_rotated_rectangle(image, (cx, cy), (cw, ch), angle)
+    crop = cv2.GaussianBlur(crop, (7, 7), 0, borderType=cv2.BORDER_REPLICATE)
 
-    cc = ((cw - 1) / 2, (ch - 1) / 2)
-    cell_mask = cv2.ellipse(
-        np.zeros((ch, cw), dtype=np.uint8),
-        box=(cc, (w, h), 0),
-        color=255,  # type: ignore
-        thickness=-1,
-    )
-    rim_mask = cv2.ellipse(
-        np.zeros((ch, cw), dtype=np.uint8),
-        box=(cc, (cw, ch), 0),
-        color=255,  # type: ignore
-        thickness=-1,
-    )
-    rim_mask ^= cell_mask
-    cell_mask = cell_mask == 0
-    rim_mask = rim_mask == 0
+    cell_mask = ellipse_mask(cw, ch, w, h)
+    cell = mask_nan(crop, cell_mask)
 
-    # adjust contrast
-    cell = np.copy(crop)
-    cell[np.repeat(cell_mask[..., np.newaxis], 3, 2)] = np.nan
-    rim = np.copy(crop)
-    rim[np.repeat(rim_mask[..., np.newaxis], 3, 2)] = np.nan
-
-    clip_min = np.nanpercentile(cell, 30, axis=(0, 1))
-    clip_max = np.nanpercentile(rim, 70, axis=(0, 1))
-    # bad contrast
-    if np.any(clip_min >= clip_max):
+    # color filter
+    (hue, light, saturate) = colorsys.rgb_to_hls(*np.nanmean(cell, (0, 1)))
+    if hue < 0.55 or hue > 0.7 or light > 0.7 or saturate < 0.2:
         return 0.0
 
-    crop = np.clip(crop, clip_min, clip_max) - clip_min
-    crop = crop * 255 / (clip_max - clip_min)
+    rim_mask = ellipse_mask(cw, ch, cw, ch) | ~cell_mask
+    rim = mask_nan(crop, rim_mask)
+
+    # adjust contrast
+    clip_min = np.nanpercentile(cell, 10, axis=(0, 1))
+    clip_max = np.nanpercentile(rim, 30, axis=(0, 1))
+    if np.any(clip_min >= (clip_max - 0.02)):
+        return 0.0
+    crop = rescale(crop, clip_min, clip_max)
     crop = np.mean(crop, axis=2)
+    cell = mask_nan(crop, cell_mask)
+    rim = mask_nan(crop, rim_mask)
 
-    # score by magic method that LGTM
-    cell = np.copy(crop)
-    cell[cell_mask] = np.nan
-    rim = np.copy(crop)
-    rim[rim_mask] = np.nan
+    # separation score
+    cell_thres = np.nanpercentile(cell, 95)
+    rim_thres = np.nanpercentile(rim, 20)
+    sep_score = utils.clamp(rim_thres - cell_thres, 0, 0.1) * 10
+    if sep_score < 0.4:
+        return 0.0
 
-    cell_thres = np.nanpercentile(cell, 90)
-    rim_thres = np.nanpercentile(rim, 30)
-    score = min(max((rim_thres - cell_thres) * 2, 0), 40) * 1.5  # type: ignore
-    score += min(max(80 - np.nanstd(cell), 0), 40)  # type: ignore
-    score += min(max(80 - np.nanmean(cell), 0), 40)  # type: ignore
+    stddev_1 = utils.clamp(0.35 - np.nanstd(cell), 0, 0.15) / 0.15
+    if stddev_1 < 0.2:
+        return 0.0
 
-    return score / 140
+    crop = rescale(crop, cell_thres, rim_thres)
+    cell = mask_nan(crop, cell_mask)
+    stddev_2 = utils.clamp(0.3 - np.nanstd(cell), 0, 0.15) / 0.15
+    if stddev_2 < 0.2:
+        return 0.0
+
+    return sep_score * stddev_1 * stddev_2
